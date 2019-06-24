@@ -15,6 +15,7 @@
 package safebrowsing
 
 import (
+	"context"
 	"flag"
 	"testing"
 	"time"
@@ -33,7 +34,7 @@ func TestNetworkAPIUpdate(t *testing.T) {
 		t.Skip()
 	}
 
-	nm, err := newNetAPI(DefaultServerURL, *apiKeyFlag)
+	nm, err := newNetAPI(DefaultServerURL, *apiKeyFlag, "")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -46,7 +47,7 @@ func TestNetworkAPIUpdate(t *testing.T) {
 		}}
 	req := &pb.FetchThreatListUpdatesRequest{ListUpdateRequests: lists}
 
-	dat, err := nm.ListUpdate(req)
+	dat, err := nm.ListUpdate(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +96,7 @@ func TestNetworkAPIUpdate(t *testing.T) {
 						ThreatEntries:    threats,
 					},
 				}
-				fullHashResp, err := nm.HashLookup(fullHashReq)
+				fullHashResp, err := nm.HashLookup(context.Background(), fullHashReq)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -112,7 +113,7 @@ func TestNetworkAPILookup(t *testing.T) {
 		t.Skip()
 	}
 
-	nm, err := newNetAPI(DefaultServerURL, *apiKeyFlag)
+	nm, err := newNetAPI(DefaultServerURL, *apiKeyFlag, "")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestNetworkAPILookup(t *testing.T) {
 			ThreatEntries:    []*pb.ThreatEntry{{Hash: []byte(hash[:minHashPrefixLength])}},
 		},
 	}
-	resp, err := nm.HashLookup(req)
+	resp, err := nm.HashLookup(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Lookup failed: %v", err)
 	}
@@ -159,27 +160,37 @@ func TestSafeBrowser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := sb.WaitUntilReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
 
 	var c = pb.FetchThreatListUpdatesRequest_ListUpdateRequest{
 		ThreatType:      pb.ThreatType_POTENTIALLY_HARMFUL_APPLICATION,
 		PlatformType:    pb.PlatformType_ANDROID,
 		ThreatEntryType: pb.ThreatEntryType_URL,
 	}
-	urls := []string{
-		"http://testsafebrowsing.appspot.com/apiv4/" + c.PlatformType.String() + "/" +
-			c.ThreatType.String() + "/" + c.ThreatEntryType.String() + "/",
-	}
+	url := "http://testsafebrowsing.appspot.com/apiv4/" + c.PlatformType.String() + "/" +
+		c.ThreatType.String() + "/" + c.ThreatEntryType.String() + "/"
+
+	urls := []string{url, url + "?q=test"}
 	threats, e := sb.LookupURLs(urls)
 	if e != nil {
 		t.Fatal(e)
 	}
-	if len(threats[0]) == 0 {
+	if len(threats[0]) != 1 || len(threats[1]) != 1 {
 		t.Errorf("lookupURL failed")
 	}
 
 	if err := sb.Close(); err != nil {
 		t.Fatal(err)
 	}
+	ctx, cancel = context.WithTimeout(context.Background(), time.Millisecond)
+	if err := sb.WaitUntilReady(ctx); err != errClosed {
+		t.Errorf("sb.WaitUntilReady() = %v on closed SafeBrowser, want %v", err, errClosed)
+	}
+	cancel()
 
 	for _, hs := range sb.db.tfl {
 		if hs.Len() == 0 {

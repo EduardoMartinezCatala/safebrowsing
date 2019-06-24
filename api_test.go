@@ -15,10 +15,10 @@
 package safebrowsing
 
 import (
+	"context"
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"testing"
 
 	pb "github.com/google/safebrowsing/internal/safebrowsing_proto"
@@ -27,16 +27,16 @@ import (
 )
 
 type mockAPI struct {
-	listUpdate func(*pb.FetchThreatListUpdatesRequest) (*pb.FetchThreatListUpdatesResponse, error)
-	hashLookup func(*pb.FindFullHashesRequest) (*pb.FindFullHashesResponse, error)
+	listUpdate func(context.Context, *pb.FetchThreatListUpdatesRequest) (*pb.FetchThreatListUpdatesResponse, error)
+	hashLookup func(context.Context, *pb.FindFullHashesRequest) (*pb.FindFullHashesResponse, error)
 }
 
-func (m *mockAPI) ListUpdate(req *pb.FetchThreatListUpdatesRequest) (*pb.FetchThreatListUpdatesResponse, error) {
-	return m.listUpdate(req)
+func (m *mockAPI) ListUpdate(ctx context.Context, req *pb.FetchThreatListUpdatesRequest) (*pb.FetchThreatListUpdatesResponse, error) {
+	return m.listUpdate(ctx, req)
 }
 
-func (m *mockAPI) HashLookup(req *pb.FindFullHashesRequest) (*pb.FindFullHashesResponse, error) {
-	return m.hashLookup(req)
+func (m *mockAPI) HashLookup(ctx context.Context, req *pb.FindFullHashesRequest) (*pb.FindFullHashesResponse, error) {
+	return m.hashLookup(ctx, req)
 }
 
 func TestNetAPI(t *testing.T) {
@@ -60,7 +60,7 @@ func TestNetAPI(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	api, err := newNetAPI(ts.URL, "fizzbuzz")
+	api, err := newNetAPI(ts.URL, "fizzbuzz", "")
 	if err != nil {
 		t.Errorf("unexpected newNetAPI error: %v", err)
 	}
@@ -82,15 +82,15 @@ func TestNetAPI(t *testing.T) {
 		}}},
 	}}
 	gotReq = &pb.FetchThreatListUpdatesRequest{}
-	resp1, err := api.ListUpdate(wantReq.(*pb.FetchThreatListUpdatesRequest))
+	resp1, err := api.ListUpdate(context.Background(), wantReq.(*pb.FetchThreatListUpdatesRequest))
 	gotResp = resp1
 	if err != nil {
 		t.Errorf("unexpected ListUpdate error: %v", err)
 	}
-	if !reflect.DeepEqual(gotReq, wantReq) {
+	if !proto.Equal(gotReq, wantReq) {
 		t.Errorf("mismatching ListUpdate requests:\ngot  %+v\nwant %+v", gotReq, wantReq)
 	}
-	if !reflect.DeepEqual(gotResp, wantResp) {
+	if !proto.Equal(gotResp, wantResp) {
 		t.Errorf("mismatching ListUpdate responses:\ngot  %+v\nwant %+v", gotResp, wantResp)
 	}
 
@@ -107,28 +107,35 @@ func TestNetAPI(t *testing.T) {
 		{ThreatType: 2, PlatformType: 3, ThreatEntryType: 4, Threat: &pb.ThreatEntry{Hash: []byte("ijkl")}},
 	}}
 	gotReq = &pb.FindFullHashesRequest{}
-	resp2, err := api.HashLookup(wantReq.(*pb.FindFullHashesRequest))
+	resp2, err := api.HashLookup(context.Background(), wantReq.(*pb.FindFullHashesRequest))
 	gotResp = resp2
 	if err != nil {
 		t.Errorf("unexpected HashLookup error: %v", err)
 	}
-	if !reflect.DeepEqual(gotReq, wantReq) {
+	if !proto.Equal(gotReq, wantReq) {
 		t.Errorf("mismatching HashLookup requests:\ngot  %+v\nwant %+v", gotReq, wantReq)
 	}
-	if !reflect.DeepEqual(gotResp, wantResp) {
+	if !proto.Equal(gotResp, wantResp) {
 		t.Errorf("mismatching HashLookup responses:\ngot  %+v\nwant %+v", gotResp, wantResp)
 	}
 
-	// Test for detection of incorrect protobufs.
+	// Test canceled Context returns an error.
 	wantReq = &pb.FindFullHashesRequest{ThreatInfo: &pb.ThreatInfo{
+		ThreatEntries:    []*pb.ThreatEntry{{Hash: []byte("aaaa")}, {Hash: []byte("bbbbb")}, {Hash: []byte("cccccc")}},
+		ThreatTypes:      []pb.ThreatType{1, 2, 3},
+		PlatformTypes:    []pb.PlatformType{4, 5, 6},
 		ThreatEntryTypes: []pb.ThreatEntryType{7, 8, 9},
 	}}
-	wantResp = &pb.FetchThreatListUpdatesResponse{ListUpdateResponses: []*pb.FetchThreatListUpdatesResponse_ListUpdateResponse{
-		{ThreatType: 1, PlatformType: 2, ThreatEntryType: 3, ResponseType: 1},
+	wantResp = &pb.FindFullHashesResponse{Matches: []*pb.ThreatMatch{
+		{ThreatType: 0, PlatformType: 1, ThreatEntryType: 2, Threat: &pb.ThreatEntry{Hash: []byte("abcd")}},
+		{ThreatType: 1, PlatformType: 2, ThreatEntryType: 3, Threat: &pb.ThreatEntry{Hash: []byte("efgh")}},
+		{ThreatType: 2, PlatformType: 3, ThreatEntryType: 4, Threat: &pb.ThreatEntry{Hash: []byte("ijkl")}},
 	}}
 	gotReq = &pb.FindFullHashesRequest{}
-	_, err = api.HashLookup(wantReq.(*pb.FindFullHashesRequest))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = api.HashLookup(ctx, wantReq.(*pb.FindFullHashesRequest))
 	if err == nil {
-		t.Errorf("unexpected HashLookup success")
+		t.Errorf("unexpected HashLookup success, wanted HTTP request canceled")
 	}
 }

@@ -194,6 +194,7 @@ import (
 	"fmt"
 	"html/template"
 	"io/ioutil"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -222,6 +223,7 @@ const (
 var (
 	apiKeyFlag   = flag.String("apikey", "", "specify your Safe Browsing API key")
 	srvAddrFlag  = flag.String("srvaddr", "localhost:8080", "TCP network address the HTTP server should use")
+	proxyFlag    = flag.String("proxy", "", "proxy to use to connect to the HTTP server")
 	databaseFlag = flag.String("db", "", "path to the Safe Browsing database.")
 )
 
@@ -248,35 +250,41 @@ Usage: %s -apikey=$APIKEY
 
 // unmarshal reads pbResp from req. The mime will either be JSON or ProtoBuf.
 func unmarshal(req *http.Request, pbReq proto.Message) (string, error) {
-	var mime string
-	alt := req.URL.Query().Get("alt")
-	if alt == "" {
-		alt = req.Header.Get("Content-Type")
-	}
-	switch alt {
-	case "json", mimeJSON:
-		mime = mimeJSON
-	case "proto", mimeProto:
-		mime = mimeProto
-	default:
-		return mime, errors.New("invalid interchange format")
+	var mimeType string
+	mediaType, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
+	if err != nil {
+		mediaType = req.Header.Get("Content-Type")
 	}
 
-	switch req.Header.Get("Content-Type") {
+	alt := req.URL.Query().Get("alt")
+	if alt == "" {
+		alt = mediaType
+	}
+
+	switch alt {
+	case "json", mimeJSON:
+		mimeType = mimeJSON
+	case "proto", mimeProto:
+		mimeType = mimeProto
+	default:
+		return mimeType, errors.New("invalid interchange format")
+	}
+
+	switch mediaType {
 	case mimeJSON:
 		if err := jsonpb.Unmarshal(req.Body, pbReq); err != nil {
-			return mime, err
+			return mimeType, err
 		}
 	case mimeProto:
 		body, err := ioutil.ReadAll(req.Body)
 		if err != nil {
-			return mime, err
+			return mimeType, err
 		}
 		if err := proto.Unmarshal(body, pbReq); err != nil {
-			return mime, err
+			return mimeType, err
 		}
 	}
-	return mime, nil
+	return mimeType, nil
 }
 
 // marshal writes pbResp into resp. The mime can either be JSON or ProtoBuf.
@@ -358,7 +366,7 @@ func serveLookups(resp http.ResponseWriter, req *http.Request, sb *safebrowsing.
 	}
 
 	// Lookup the URLs.
-	utss, err := sb.LookupURLs(urls)
+	utss, err := sb.LookupURLsContext(req.Context(), urls)
 	if err != nil {
 		http.Error(resp, err.Error(), http.StatusInternalServerError)
 		return
@@ -463,7 +471,7 @@ func serveRedirector(resp http.ResponseWriter, req *http.Request, sb *safebrowsi
 		http.Error(resp, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	threats, err := sb.LookupURLs([]string{rawURL})
+	threats, err := sb.LookupURLsContext(req.Context(), []string{rawURL})
 	if err != nil {
 		http.Error(resp, err.Error(), http.StatusInternalServerError)
 		return
@@ -504,9 +512,10 @@ func main() {
 		os.Exit(1)
 	}
 	conf := safebrowsing.Config{
-		APIKey: *apiKeyFlag,
-		DBPath: *databaseFlag,
-		Logger: os.Stderr,
+		APIKey:   *apiKeyFlag,
+		ProxyURL: *proxyFlag,
+		DBPath:   *databaseFlag,
+		Logger:   os.Stderr,
 	}
 	sb, err := safebrowsing.NewSafeBrowser(conf)
 	if err != nil {
